@@ -6,26 +6,25 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
+
+	appcleanup "codeagent-wrapper/internal/application/cleanup"
 )
 
 var version = "dev"
 
 const (
 	defaultWorkdir        = "."
-	defaultTimeout        = 7200 // seconds (2 hours)
 	defaultCoverageTarget = 90.0
 	codexLogLineLimit     = 1000
 	stdinSpecialChars     = "\n\\\"'`$"
 	stderrCaptureLimit    = 4 * 1024
 	defaultBackendName    = "codex"
 	defaultCodexCommand   = "codex"
+	noExecutionTimeout    = 0
 
 	// stdout close reasons
-	stdoutCloseReasonWait  = "wait-done"
-	stdoutCloseReasonDrain = "drain-timeout"
-	stdoutCloseReasonCtx   = "context-cancel"
-	stdoutDrainTimeout     = 500 * time.Millisecond
+	stdoutCloseReasonWait = "wait-done"
+	stdoutCloseReasonCtx  = "context-cancel"
 )
 
 // Test hooks for dependency injection
@@ -80,34 +79,12 @@ func scheduleStartupCleanup() {
 }
 
 func runCleanupMode() int {
-	if cleanupLogsFn == nil {
-		fmt.Fprintln(os.Stderr, "Cleanup failed: log cleanup function not configured")
-		return 1
-	}
-
-	stats, err := cleanupLogsFn()
+	stats, err := appcleanup.Execute(appcleanup.Deps{Run: cleanupLogsFn})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Cleanup failed: %v\n", err)
 		return 1
 	}
-
-	fmt.Println("Cleanup completed")
-	fmt.Printf("Files scanned: %d\n", stats.Scanned)
-	fmt.Printf("Files deleted: %d\n", stats.Deleted)
-	if len(stats.DeletedFiles) > 0 {
-		for _, f := range stats.DeletedFiles {
-			fmt.Printf("  - %s\n", f)
-		}
-	}
-	fmt.Printf("Files kept: %d\n", stats.Kept)
-	if len(stats.KeptFiles) > 0 {
-		for _, f := range stats.KeptFiles {
-			fmt.Printf("  - %s\n", f)
-		}
-	}
-	if stats.Errors > 0 {
-		fmt.Printf("Deletion errors: %d\n", stats.Errors)
-	}
+	appcleanup.Render(os.Stdout, stats)
 	return 0
 }
 
@@ -265,13 +242,12 @@ Parallel mode examples:
     %[1]s --parallel <<'EOF'
 
 Environment Variables:
-    CODEX_TIMEOUT         Timeout in milliseconds (default: 7200000)
+    CODEAGENT_MAX_PARALLEL_WORKERS  Parallel worker count (default: 10, 0=unlimited, max 100)
     CODEAGENT_ASCII_MODE  Use ASCII symbols instead of Unicode (PASS/WARN/FAIL)
 
 Exit Codes:
     0    Success
     1    General error (missing args, no output)
-    124  Timeout
     127  backend command not found
     130  Interrupted (Ctrl+C)
     *    Passthrough from backend process`, name)

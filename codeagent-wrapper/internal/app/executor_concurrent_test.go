@@ -248,7 +248,7 @@ func TestExecutorRunCodexTaskWithContext(t *testing.T) {
 		}
 	})
 
-	t.Run("timeoutAndPipes", func(t *testing.T) {
+	t.Run("completionAndPipes", func(t *testing.T) {
 		executor.SetNewCommandRunner(func(ctx context.Context, name string, args ...string) executor.CommandRunner {
 			return &execFakeRunner{
 				stdout:    newReasonReadCloser(`{"type":"item.completed","item":{"type":"agent_message","text":"slow"}}`),
@@ -258,8 +258,8 @@ func TestExecutorRunCodexTaskWithContext(t *testing.T) {
 		})
 		t.Cleanup(func() { executor.SetNewCommandRunner(nil) })
 		res := runCodexTaskWithContext(context.Background(), TaskSpec{Task: "payload", WorkDir: ".", UseStdin: true}, nil, nil, false, false, 0)
-		if res.ExitCode == 0 {
-			t.Fatalf("expected timeout result, got %+v", res)
+		if res.ExitCode != 0 || res.Message != "slow" {
+			t.Fatalf("expected successful completion result, got %+v", res)
 		}
 	})
 

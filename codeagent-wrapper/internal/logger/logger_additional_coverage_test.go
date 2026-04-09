@@ -20,6 +20,37 @@ func TestLoggerNilReceiverNoop(t *testing.T) {
 	}
 }
 
+func TestLoggerCloseIgnoresLegacyTimeoutEnvAndKeepsLogs(t *testing.T) {
+	setTempDirEnv(t, t.TempDir())
+	t.Setenv("CODEAGENT_LOGGER_CLOSE_TIMEOUT_MS", "1")
+
+	logger, err := NewLoggerWithSuffix("close-no-timeout")
+	if err != nil {
+		t.Fatalf("NewLoggerWithSuffix error: %v", err)
+	}
+
+	logger.Info("persist after close")
+	logPath := logger.Path()
+
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close() returned error: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("second Close() returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("failed to read closed log file: %v", err)
+	}
+	if !strings.Contains(string(data), "persist after close") {
+		t.Fatalf("closed log file missing persisted message, got: %s", string(data))
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("expected log file to remain after Close, err=%v", err)
+	}
+}
+
 func TestLoggerConcurrencyLogHelpers(t *testing.T) {
 	setTempDirEnv(t, t.TempDir())
 

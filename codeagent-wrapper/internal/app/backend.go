@@ -1,6 +1,6 @@
 package wrapper
 
-import backend "codeagent-wrapper/internal/backend"
+import backend "codeagent-wrapper/internal/infrastructure/backend"
 
 type Backend = backend.Backend
 type CodexBackend = backend.CodexBackend

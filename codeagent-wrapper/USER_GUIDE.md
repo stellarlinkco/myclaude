@@ -9,7 +9,7 @@ Multi-backend AI code execution wrapper supporting Codex, Claude, Gemini, and Op
 - JSON stream parsing and output formatting
 - Session management and resumption
 - Parallel task execution with dependency resolution
-- Timeout handling and signal forwarding
+- Async execution with per-task completion summaries and signal forwarding
 
 ## Installation
 
@@ -50,7 +50,7 @@ EOF
 | `--model <name>` | Override model for this invocation |
 | `--agent <name>` | Agent preset name (from ~/.codeagent/models.json) |
 | `--config <path>` | Path to models.json config file |
-| `--cleanup` | Clean up log files on startup |
+| `--cleanup` | Clean up historical log files and exit |
 | `--worktree` | Execute in a new git worktree (auto-generates task ID) |
 | `--skills <names>` | Comma-separated skill names for spec injection |
 | `--prompt-file <path>` | Read prompt from file |
@@ -214,20 +214,9 @@ EOF
 
 ## Advanced Usage
 
-### Timeout Control
+### Async Execution
 
-```bash
-# Set custom timeout (1 hour = 3600000ms)
-CODEX_TIMEOUT=3600000 codeagent-wrapper "long running task"
-
-# Default timeout: 7200000ms (2 hours)
-```
-
-**Timeout behavior:**
-- Sends SIGTERM to backend process
-- Waits 5 seconds
-- Sends SIGKILL if process doesn't exit
-- Returns exit code 124 (consistent with GNU timeout)
+`codeagent-wrapper` no longer applies a wrapper-managed execution timeout. The wrapper waits for backend completion events/process exit, keeps the task log on disk, and reports per-task summaries as work finishes.
 
 ### Complex Multi-line Tasks
 
@@ -327,7 +316,6 @@ Error: dependency backend_1701234567 failed
 |------|---------|
 | 0 | Success |
 | 1 | General error (missing args, no output) |
-| 124 | Timeout |
 | 127 | Backend command not found |
 | 130 | Interrupted (Ctrl+C) |
 | * | Passthrough from backend process |
@@ -336,9 +324,9 @@ Error: dependency backend_1701234567 failed
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CODEX_TIMEOUT` | 7200000 | Timeout in milliseconds |
 | `CODEX_BYPASS_SANDBOX` | true | Bypass Codex sandbox/approval. Set `false` to disable |
 | `CODEAGENT_SKIP_PERMISSIONS` | true | Skip Claude permission prompts. Set `false` to disable |
+| `CODEAGENT_MAX_PARALLEL_WORKERS` | 10 | Parallel worker limit (`0` = unlimited, max 100) |
 
 ## Troubleshooting
 
@@ -351,12 +339,6 @@ which gemini
 
 # Check PATH
 echo $PATH
-```
-
-**Timeout too short:**
-```bash
-# Increase timeout to 4 hours
-CODEX_TIMEOUT=14400000 codeagent-wrapper "complex task"
 ```
 
 **Session ID not found:**

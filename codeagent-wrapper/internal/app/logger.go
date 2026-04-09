@@ -1,26 +1,29 @@
 package wrapper
 
-import ilogger "codeagent-wrapper/internal/logger"
+import (
+	janitor "codeagent-wrapper/internal/infrastructure/janitor"
+	logstore "codeagent-wrapper/internal/infrastructure/logstore"
+)
 
-type Logger = ilogger.Logger
-type CleanupStats = ilogger.CleanupStats
+type Logger = logstore.Logger
+type CleanupStats = janitor.CleanupStats
 
-func NewLogger() (*Logger, error) { return ilogger.NewLogger() }
+func NewLogger() (*Logger, error) { return logstore.NewLogger() }
 
-func NewLoggerWithSuffix(suffix string) (*Logger, error) { return ilogger.NewLoggerWithSuffix(suffix) }
+func NewLoggerWithSuffix(suffix string) (*Logger, error) { return logstore.NewLoggerWithSuffix(suffix) }
 
-func setLogger(l *Logger) { ilogger.SetLogger(l) }
+func setLogger(l *Logger) { logstore.SetLogger(l) }
 
-func closeLogger() error { return ilogger.CloseLogger() }
+func closeLogger() error { return logstore.CloseLogger() }
 
-func activeLogger() *Logger { return ilogger.ActiveLogger() }
+func activeLogger() *Logger { return logstore.ActiveLogger() }
 
-func logInfo(msg string) { ilogger.LogInfo(msg) }
+func logInfo(msg string) { logstore.LogInfo(msg) }
 
-func logWarn(msg string) { ilogger.LogWarn(msg) }
+func logWarn(msg string) { logstore.LogWarn(msg) }
 
-func logError(msg string) { ilogger.LogError(msg) }
+func logError(msg string) { logstore.LogError(msg) }
 
-func cleanupOldLogs() (CleanupStats, error) { return ilogger.CleanupOldLogs() }
+func cleanupOldLogs() (CleanupStats, error) { return janitor.CleanupOldLogs() }
 
-func sanitizeLogSuffix(raw string) string { return ilogger.SanitizeLogSuffix(raw) }
+func sanitizeLogSuffix(raw string) string { return logstore.SanitizeLogSuffix(raw) }

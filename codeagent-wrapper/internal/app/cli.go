@@ -1,13 +1,14 @@
 package wrapper
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"reflect"
 	"strings"
 
+	appoutput "codeagent-wrapper/internal/application/output"
 	config "codeagent-wrapper/internal/config"
 
 	"github.com/spf13/cobra"
@@ -448,119 +449,18 @@ func runParallelMode(cmd *cobra.Command, args []string, opts *cliOptions, v *vip
 		return 1
 	}
 
-	backendName := defaultBackendName
-	if cmd.Flags().Changed("backend") {
-		backendName = strings.TrimSpace(opts.Backend)
-		if backendName == "" {
-			fmt.Fprintln(os.Stderr, "ERROR: --backend flag requires a value")
-			return 1
-		}
-	} else if val := strings.TrimSpace(v.GetString("backend")); val != "" {
-		backendName = val
-	}
-
-	model := ""
-	if cmd.Flags().Changed("model") {
-		model = strings.TrimSpace(opts.Model)
-		if model == "" {
-			fmt.Fprintln(os.Stderr, "ERROR: --model flag requires a value")
-			return 1
-		}
-	} else {
-		model = strings.TrimSpace(v.GetString("model"))
-	}
-
-	fullOutput := opts.FullOutput
-	if !cmd.Flags().Changed("full-output") && v.IsSet("full-output") {
-		fullOutput = v.GetBool("full-output")
-	}
-
-	outputPath := ""
-	if cmd.Flags().Changed("output") {
-		outputPath = strings.TrimSpace(opts.Output)
-		if outputPath == "" {
-			fmt.Fprintln(os.Stderr, "ERROR: --output flag requires a value")
-			return 1
-		}
-	} else if val := strings.TrimSpace(v.GetString("output")); val != "" {
-		outputPath = val
-	}
-
-	skipChanged := cmd.Flags().Changed("skip-permissions") || cmd.Flags().Changed("dangerously-skip-permissions")
-	skipPermissions := false
-	if skipChanged {
-		skipPermissions = opts.SkipPermissions
-	} else {
-		skipPermissions = v.GetBool("skip-permissions")
-	}
-
-	backend, err := selectBackendFn(backendName)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
-		return 1
-	}
-	backendName = backend.Name()
-
-	data, err := io.ReadAll(stdinReader)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: failed to read stdin: %v\n", err)
-		return 1
-	}
-
-	cfg, err := parseParallelConfig(data)
+	plan, err := buildParallelRunPlan(cmd, opts, v)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 		return 1
 	}
 
-	cfg.GlobalBackend = backendName
-	model = strings.TrimSpace(model)
-	for i := range cfg.Tasks {
-		if strings.TrimSpace(cfg.Tasks[i].Backend) == "" {
-			cfg.Tasks[i].Backend = backendName
-		}
-		if strings.TrimSpace(cfg.Tasks[i].Model) == "" && model != "" {
-			cfg.Tasks[i].Model = model
-		}
-		cfg.Tasks[i].SkipPermissions = cfg.Tasks[i].SkipPermissions || skipPermissions
-	}
-
-	timeoutSec := resolveTimeout()
-	layers, err := topologicalSort(cfg.Tasks)
+	output, exitCode, err := runParallelPlan(nil, plan)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 		return 1
 	}
-
-	results := executeConcurrent(layers, timeoutSec)
-
-	for i := range results {
-		results[i].CoverageTarget = defaultCoverageTarget
-		if results[i].Message == "" {
-			continue
-		}
-
-		lines := strings.Split(results[i].Message, "\n")
-		results[i].Coverage = extractCoverageFromLines(lines)
-		results[i].CoverageNum = extractCoverageNum(results[i].Coverage)
-		results[i].FilesChanged = extractFilesChangedFromLines(lines)
-		results[i].TestsPassed, results[i].TestsFailed = extractTestResultsFromLines(lines)
-		results[i].KeyOutput = extractKeyOutputFromLines(lines, 0)
-	}
-
-	if err := writeStructuredOutput(outputPath, results); err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
-		return 1
-	}
-
-	fmt.Println(generateFinalOutputWithMode(results, !fullOutput))
-
-	exitCode := 0
-	for _, res := range results {
-		if res.ExitCode != 0 {
-			exitCode = res.ExitCode
-		}
-	}
+	appoutput.Emit(os.Stdout, appoutput.FinalizeParallel(output, exitCode))
 	return exitCode
 }
 
@@ -583,67 +483,11 @@ func runSingleMode(cfg *Config, name string) int {
 	}
 	logInfo(fmt.Sprintf("Selected backend: %s", backend.Name()))
 
-	timeoutSec := resolveTimeout()
-	logInfo(fmt.Sprintf("Timeout: %ds", timeoutSec))
-	cfg.Timeout = timeoutSec
-
-	var taskText string
-	var piped bool
-
-	if cfg.ExplicitStdin {
-		logInfo("Explicit stdin mode: reading task from stdin")
-		data, err := io.ReadAll(stdinReader)
-		if err != nil {
-			logError("Failed to read stdin: " + err.Error())
-			return 1
-		}
-		taskText = string(data)
-		if taskText == "" {
-			logError("Explicit stdin mode requires task input from stdin")
-			return 1
-		}
-		piped = !isTerminal()
-	} else {
-		pipedTask, err := readPipedTask()
-		if err != nil {
-			logError("Failed to read piped stdin: " + err.Error())
-			return 1
-		}
-		piped = pipedTask != ""
-		if piped {
-			taskText = pipedTask
-		} else {
-			taskText = cfg.Task
-		}
+	plan, err := prepareSingleTaskPlan(cfg)
+	if err != nil {
+		logError(err.Error())
+		return 1
 	}
-
-	if strings.TrimSpace(cfg.PromptFile) != "" {
-		prompt, err := readAgentPromptFile(cfg.PromptFile, cfg.PromptFileExplicit)
-		if err != nil {
-			logError("Failed to read prompt file: " + err.Error())
-			return 1
-		}
-		taskText = wrapTaskWithAgentPrompt(prompt, taskText)
-	}
-
-	// Resolve skills: explicit > auto-detect from workdir
-	skills := cfg.Skills
-	if len(skills) == 0 {
-		skills = detectProjectSkills(cfg.WorkDir)
-	}
-	if len(skills) > 0 {
-		if content := resolveSkillContent(skills, 0); content != "" {
-			taskText = taskText + "\n\n# Domain Best Practices\n\n" + content
-		}
-	}
-
-	useStdin := cfg.ExplicitStdin || shouldUseStdin(taskText, piped)
-
-	targetArg := taskText
-	if useStdin {
-		targetArg = "-"
-	}
-	codexArgs := buildCodexArgsFn(cfg, targetArg)
 
 	logger := activeLogger()
 	if logger == nil {
@@ -651,101 +495,32 @@ func runSingleMode(cfg *Config, name string) int {
 		return 1
 	}
 
-	fmt.Fprintf(os.Stderr, "[%s]\n", name)
-	fmt.Fprintf(os.Stderr, "  Backend: %s\n", cfg.Backend)
-	fmt.Fprintf(os.Stderr, "  Command: %s %s\n", codexCommand, strings.Join(codexArgs, " "))
-	fmt.Fprintf(os.Stderr, "  PID: %d\n", os.Getpid())
-	fmt.Fprintf(os.Stderr, "  Log: %s\n", logger.Path())
+	appoutput.RenderSingleTaskBanner(os.Stderr, name, cfg.Backend, append([]string{codexCommand}, plan.Command...), os.Getpid(), logger.Path())
 
-	if cfg.Mode == "new" && strings.TrimSpace(taskText) == "integration-log-check" {
+	if cfg.Mode == "new" && strings.TrimSpace(plan.TaskText) == "integration-log-check" {
 		logInfo("Integration log check: skipping backend execution")
 		return 0
 	}
 
-	if useStdin {
-		var reasons []string
-		if piped {
-			reasons = append(reasons, "piped input")
-		}
-		if cfg.ExplicitStdin {
-			reasons = append(reasons, "explicit \"-\"")
-		}
-		if strings.Contains(taskText, "\n") {
-			reasons = append(reasons, "newline")
-		}
-		if strings.Contains(taskText, "\\") {
-			reasons = append(reasons, "backslash")
-		}
-		if strings.Contains(taskText, "\"") {
-			reasons = append(reasons, "double-quote")
-		}
-		if strings.Contains(taskText, "'") {
-			reasons = append(reasons, "single-quote")
-		}
-		if strings.Contains(taskText, "`") {
-			reasons = append(reasons, "backtick")
-		}
-		if strings.Contains(taskText, "$") {
-			reasons = append(reasons, "dollar")
-		}
-		if len(taskText) > 800 {
-			reasons = append(reasons, "length>800")
-		}
-		if len(reasons) > 0 {
-			logWarn(fmt.Sprintf("Using stdin mode for task due to: %s", strings.Join(reasons, ", ")))
-		}
-	}
+	logSingleTaskStdinReasons(plan)
 
 	logInfo(fmt.Sprintf("%s running...", cfg.Backend))
 
-	taskSpec := TaskSpec{
-		Task:            taskText,
-		WorkDir:         cfg.WorkDir,
-		Mode:            cfg.Mode,
-		SessionID:       cfg.SessionID,
-		Backend:         cfg.Backend,
-		Model:           cfg.Model,
-		ReasoningEffort: cfg.ReasoningEffort,
-		Agent:           cfg.Agent,
-		SkipPermissions: cfg.SkipPermissions,
-		Worktree:        cfg.Worktree,
-		AllowedTools:    cfg.AllowedTools,
-		DisallowedTools: cfg.DisallowedTools,
-		UseStdin:        useStdin,
-	}
-
-	result := runTaskFn(taskSpec, false, cfg.Timeout)
-
-	exitCode := result.ExitCode
-	if exitCode == 0 && strings.TrimSpace(result.Message) == "" {
-		errMsg := fmt.Sprintf("no output message: backend=%s returned empty result.Message with exit_code=0", cfg.Backend)
-		logError(errMsg)
-		exitCode = 1
-		if strings.TrimSpace(result.Error) == "" {
-			result.Error = errMsg
-		}
-	}
-
-	if err := writeStructuredOutput(cfg.OutputPath, []TaskResult{result}); err != nil {
+	result, err := executeSingleTaskPlan(context.Background(), plan)
+	if err != nil {
 		logError(err.Error())
 		return 1
 	}
 
-	if exitCode != 0 {
-		// Surface any parsed backend output even on non-zero exit to avoid "(no output)" in tool runners.
-		if strings.TrimSpace(result.Message) != "" {
-			fmt.Println(result.Message)
-			if result.SessionID != "" {
-				fmt.Printf("\n---\nSESSION_ID: %s\n", result.SessionID)
-			}
-		}
-		return exitCode
+	output, err := appoutput.FinalizeSingleTask(cfg.Backend, cfg.OutputPath, result)
+	if err != nil {
+		logError(err.Error())
+		return 1
+	}
+	if output.ExitCode != 0 && strings.TrimSpace(result.Message) == "" && strings.TrimSpace(output.LogError) != "" {
+		logError(output.LogError)
 	}
 
-	fmt.Println(result.Message)
-	if result.SessionID != "" {
-		fmt.Printf("\n---\nSESSION_ID: %s\n", result.SessionID)
-	}
-
-	return 0
+	appoutput.Emit(os.Stdout, output)
+	return output.ExitCode
 }

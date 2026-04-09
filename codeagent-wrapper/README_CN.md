@@ -16,7 +16,7 @@
 - **动态 Agent**：在 `~/.codeagent/agents/{name}.md` 放置 prompt 文件即可作为 agent 使用
 - **技能自动注入**：`--skills` 手动指定，或根据项目技术栈自动检测（Go/Rust/Python/Node.js/Vue）并注入对应技能规范
 - **Git Worktree 隔离**：`--worktree` 在独立 git worktree 中执行任务，自动生成 task_id 和分支
-- **并行执行**：`--parallel` 从 stdin 读取多任务配置，支持依赖拓扑并发执行，带结构化摘要报告
+- **并行执行**：`--parallel` 从 stdin 读取多任务配置，支持依赖拓扑并发执行，带结构化摘要报告；默认 worker 上限为 10，可配置
 - **后端配置**：`models.json` 的 `backends` 节支持 per-backend 的 `base_url` / `api_key` 注入
 - **Claude 工具控制**：`allowed_tools` / `disallowed_tools` 限制 Claude 后端可用工具
 - **Stderr 降噪**：自动过滤 Gemini 和 Codex 后端的噪声 stderr 输出
@@ -175,9 +175,8 @@ skip-permissions: false
 | `CODEAGENT_REASONING_EFFORT` | 推理力度 |
 | `CODEAGENT_SKIP_PERMISSIONS` | 跳过权限提示（默认 true；设 `false` 关闭） |
 | `CODEAGENT_FULL_OUTPUT` | 并行模式完整输出 |
-| `CODEAGENT_MAX_PARALLEL_WORKERS` | 并行 worker 数（0=不限制，上限 100） |
+| `CODEAGENT_MAX_PARALLEL_WORKERS` | 并行 worker 数（默认 10，`0`=不限制，上限 100） |
 | `CODEAGENT_TMPDIR` | 自定义临时目录（macOS 权限问题时使用） |
-| `CODEX_TIMEOUT` | 超时（毫秒，默认 7200000 即 2 小时） |
 | `CODEX_BYPASS_SANDBOX` | Codex sandbox bypass（默认 true；设 `false` 关闭） |
 | `DO_WORKTREE_DIR` | 复用已有 worktree 目录（由 /do 工作流设置） |
 

@@ -16,7 +16,7 @@ Entry point: `cmd/codeagent-wrapper/main.go` (binary: `codeagent-wrapper`).
 - **Dynamic agents**: Place a `{name}.md` prompt file in `~/.codeagent/agents/` to use as an agent
 - **Skill auto-injection**: `--skills` for manual specification, or auto-detect from project tech stack (Go/Rust/Python/Node.js/Vue)
 - **Git worktree isolation**: `--worktree` executes tasks in an isolated git worktree with auto-generated task_id and branch
-- **Parallel execution**: `--parallel` reads multi-task config from stdin with dependency-aware topological concurrent execution and structured summary reports
+- **Parallel execution**: `--parallel` reads multi-task config from stdin with dependency-aware topological concurrent execution and structured summary reports; default worker limit is 10 and configurable
 - **Backend config**: `backends` section in `models.json` supports per-backend `base_url` / `api_key` injection
 - **Claude tool control**: `allowed_tools` / `disallowed_tools` to restrict available tools for Claude backend
 - **Stderr noise filtering**: Automatically filters noisy stderr output from Gemini and Codex backends
@@ -175,9 +175,8 @@ Read via viper with automatic `-` to `_` mapping:
 | `CODEAGENT_REASONING_EFFORT` | Reasoning effort |
 | `CODEAGENT_SKIP_PERMISSIONS` | Skip permission prompts (default true; set `false` to disable) |
 | `CODEAGENT_FULL_OUTPUT` | Full output in parallel mode |
-| `CODEAGENT_MAX_PARALLEL_WORKERS` | Parallel worker count (0=unlimited, max 100) |
+| `CODEAGENT_MAX_PARALLEL_WORKERS` | Parallel worker count (default 10, `0`=unlimited, max 100) |
 | `CODEAGENT_TMPDIR` | Custom temp directory (for macOS permission issues) |
-| `CODEX_TIMEOUT` | Timeout in ms (default 7200000 = 2 hours) |
 | `CODEX_BYPASS_SANDBOX` | Codex sandbox bypass (default true; set `false` to disable) |
 | `DO_WORKTREE_DIR` | Reuse existing worktree directory (set by /do workflow) |
 

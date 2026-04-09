@@ -11,24 +11,6 @@ import (
 	utils "codeagent-wrapper/internal/utils"
 )
 
-func resolveTimeout() int {
-	raw := os.Getenv("CODEX_TIMEOUT")
-	if raw == "" {
-		return defaultTimeout
-	}
-
-	parsed, err := strconv.Atoi(raw)
-	if err != nil || parsed <= 0 {
-		logWarn(fmt.Sprintf("Invalid CODEX_TIMEOUT '%s', falling back to %ds", raw, defaultTimeout))
-		return defaultTimeout
-	}
-
-	if parsed > 10000 {
-		return parsed / 1000
-	}
-	return parsed
-}
-
 func readPipedTask() (string, error) {
 	if isTerminal() {
 		logInfo("Stdin is tty, skipping pipe read")

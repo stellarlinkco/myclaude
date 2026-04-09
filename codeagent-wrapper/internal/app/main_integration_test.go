@@ -660,7 +660,7 @@ ok-e`
 	}
 }
 
-func TestRunParallelTimeoutPropagation(t *testing.T) {
+func TestRunParallelDoesNotPropagateCodexTimeout(t *testing.T) {
 	defer resetTestHooks()
 	origRun := runCodexTaskFn
 	t.Cleanup(func() {
@@ -671,7 +671,7 @@ func TestRunParallelTimeoutPropagation(t *testing.T) {
 	var receivedTimeout int
 	runCodexTaskFn = func(task TaskSpec, timeout int) TaskResult {
 		receivedTimeout = timeout
-		return TaskResult{TaskID: task.ID, ExitCode: 124, Error: "timeout"}
+		return TaskResult{TaskID: task.ID, ExitCode: 130, Error: "execution cancelled"}
 	}
 
 	t.Setenv("CODEX_TIMEOUT", "1")
@@ -688,18 +688,18 @@ slow`
 	})
 
 	payload := parseIntegrationOutput(t, output)
-	if receivedTimeout != 1 {
-		t.Fatalf("expected timeout 1s to propagate, got %d", receivedTimeout)
+	if receivedTimeout != noExecutionTimeout {
+		t.Fatalf("expected timeout %d, got %d", noExecutionTimeout, receivedTimeout)
 	}
-	if exitCode != 124 {
-		t.Fatalf("expected timeout exit code 124, got %d", exitCode)
+	if exitCode != 130 {
+		t.Fatalf("expected cancellation exit code 130, got %d", exitCode)
 	}
 	if payload.Summary.Failed != 1 || payload.Summary.Total != 1 {
-		t.Fatalf("unexpected summary for timeout case: %+v", payload.Summary)
+		t.Fatalf("unexpected summary for cancellation case: %+v", payload.Summary)
 	}
 	res := findResultByID(t, payload, "T")
-	if res.Error == "" || res.ExitCode != 124 {
-		t.Fatalf("timeout result not propagated, got %+v", res)
+	if res.Error != "execution cancelled" || res.ExitCode != 130 {
+		t.Fatalf("cancellation result not propagated, got %+v", res)
 	}
 }
 

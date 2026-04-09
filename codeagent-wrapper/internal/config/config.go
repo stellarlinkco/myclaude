@@ -17,7 +17,6 @@ type Config struct {
 	Model              string
 	ReasoningEffort    string
 	ExplicitStdin      bool
-	Timeout            int
 	Backend            string
 	Agent              string
 	PromptFile         string
@@ -86,22 +85,35 @@ func ValidateAgentName(name string) error {
 	return nil
 }
 
-const maxParallelWorkersLimit = 100
+const (
+	DefaultMaxParallelWorkers = 10
+	maxParallelWorkersLimit   = 100
+)
+
+func NormalizeMaxParallelWorkers(value int) int {
+	switch {
+	case value < 0:
+		return DefaultMaxParallelWorkers
+	case value == 0:
+		return 0
+	case value > maxParallelWorkersLimit:
+		return maxParallelWorkersLimit
+	default:
+		return value
+	}
+}
 
 // ResolveMaxParallelWorkers reads CODEAGENT_MAX_PARALLEL_WORKERS. It returns 0
 // for "unlimited".
 func ResolveMaxParallelWorkers() int {
 	raw := strings.TrimSpace(os.Getenv("CODEAGENT_MAX_PARALLEL_WORKERS"))
 	if raw == "" {
-		return 0
+		return DefaultMaxParallelWorkers
 	}
 
 	value, err := strconv.Atoi(raw)
-	if err != nil || value < 0 {
-		return 0
+	if err != nil {
+		return DefaultMaxParallelWorkers
 	}
-	if value > maxParallelWorkersLimit {
-		return maxParallelWorkersLimit
-	}
-	return value
+	return NormalizeMaxParallelWorkers(value)
 }

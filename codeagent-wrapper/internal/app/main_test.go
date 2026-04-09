@@ -43,6 +43,7 @@ func resetTestHooks() {
 	_ = closeLogger()
 	runTaskFn = runCodexTask
 	runCodexTaskFn = defaultRunCodexTaskFn
+	executeTaskLayersFn = defaultExecuteTaskLayers
 	exitFn = os.Exit
 }
 
@@ -195,87 +196,6 @@ func (r *ctxAwareReader) Reason() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.reason
-}
-
-type drainBlockingStdout struct {
-	inner *ctxAwareReader
-}
-
-func newDrainBlockingStdout(inner *ctxAwareReader) *drainBlockingStdout {
-	return &drainBlockingStdout{inner: inner}
-}
-
-func (d *drainBlockingStdout) Read(p []byte) (int, error) {
-	return d.inner.Read(p)
-}
-
-func (d *drainBlockingStdout) Close() error {
-	return d.inner.Close()
-}
-
-func (d *drainBlockingStdout) CloseWithReason(reason string) error {
-	if reason != stdoutCloseReasonDrain {
-		return nil
-	}
-	return d.inner.CloseWithReason(reason)
-}
-
-type drainBlockingCmd struct {
-	inner    *fakeCmd
-	injected atomic.Bool
-}
-
-func newDrainBlockingCmd(inner *fakeCmd) *drainBlockingCmd {
-	return &drainBlockingCmd{inner: inner}
-}
-
-func (d *drainBlockingCmd) Start() error {
-	return d.inner.Start()
-}
-
-func (d *drainBlockingCmd) Wait() error {
-	return d.inner.Wait()
-}
-
-func (d *drainBlockingCmd) StdoutPipe() (io.ReadCloser, error) {
-	stdout, err := d.inner.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	ctxReader, ok := stdout.(*ctxAwareReader)
-	if !ok {
-		return stdout, nil
-	}
-	d.injected.Store(true)
-	return newDrainBlockingStdout(ctxReader), nil
-}
-
-func (d *drainBlockingCmd) StderrPipe() (io.ReadCloser, error) {
-	return d.inner.StderrPipe()
-}
-
-func (d *drainBlockingCmd) StdinPipe() (io.WriteCloser, error) {
-	return d.inner.StdinPipe()
-}
-
-func (d *drainBlockingCmd) SetStderr(w io.Writer) {
-	d.inner.SetStderr(w)
-}
-
-func (d *drainBlockingCmd) SetDir(dir string) {
-	d.inner.SetDir(dir)
-}
-
-func (d *drainBlockingCmd) SetEnv(env map[string]string) {
-	d.inner.SetEnv(env)
-}
-
-func (d *drainBlockingCmd) Process() executor.ProcessHandle {
-	return d.inner.Process()
-}
-
-func (d *drainBlockingCmd) UnsetEnv(keys ...string) {
-	d.inner.UnsetEnv(keys...)
 }
 
 type bufferWriteCloser struct {
@@ -837,70 +757,57 @@ func TestRunCodexTask_WaitBeforeParse(t *testing.T) {
 	}
 }
 
-func TestRunCodexTask_ParseStall(t *testing.T) {
+func TestRunCodexTask_ParseStallRequiresCancellation(t *testing.T) {
 	defer resetTestHooks()
+	_ = executor.SetForceKillDelay(0)
 
 	const threadID = "stall-thread"
-	startG := runtime.NumGoroutine()
 
 	fake := newFakeCmd(fakeCmdConfig{
 		StdoutPlan: []fakeStdoutEvent{
 			{Data: fmt.Sprintf(`{"type":"thread.started","thread_id":"%s"}`+"\n", threadID)},
 		},
-		KeepStdoutOpen: true,
+		KeepStdoutOpen:      true,
+		BlockWait:           true,
+		ReleaseWaitOnKill:   true,
+		ReleaseWaitOnSignal: false,
 	})
 
-	blockingCmd := newDrainBlockingCmd(fake)
-	_ = executor.SetNewCommandRunner(func(ctx context.Context, name string, args ...string) executor.CommandRunner { return blockingCmd })
+	_ = executor.SetNewCommandRunner(func(ctx context.Context, name string, args ...string) executor.CommandRunner { return fake })
 	buildCodexArgsFn = func(cfg *Config, targetArg string) []string {
 		return []string{targetArg}
 	}
 	codexCommand = "fake-cmd"
 
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
 	start := time.Now()
-	result := runCodexTask(TaskSpec{Task: "stall"}, false, 60)
+	result := runCodexTaskWithContext(ctx, TaskSpec{Task: "stall", WorkDir: defaultWorkdir}, nil, nil, false, false, 60)
 	elapsed := time.Since(start)
-	if !blockingCmd.injected.Load() {
-		t.Fatalf("stdout wrapper was not installed")
-	}
 
 	if result.ExitCode == 0 || result.Error == "" {
-		t.Fatalf("expected runCodexTask to error when parse stalls, got %+v", result)
+		t.Fatalf("expected runCodexTaskWithContext to error when parse stalls, got %+v", result)
 	}
-	errText := strings.ToLower(result.Error)
-	if !strings.Contains(errText, "drain timeout") && !strings.Contains(errText, "agent_message") {
-		t.Fatalf("error %q does not mention drain timeout or missing agent_message", result.Error)
+	if !strings.Contains(strings.ToLower(result.Error), "cancelled") {
+		t.Fatalf("error %q does not mention cancellation", result.Error)
 	}
 
-	if elapsed < stdoutDrainTimeout {
-		t.Fatalf("runCodexTask returned after %v (reason=%s), want >= %v to confirm drainTimer firing", elapsed, fake.stdout.Reason(), stdoutDrainTimeout)
+	if elapsed < 150*time.Millisecond {
+		t.Fatalf("runCodexTaskWithContext returned too early: %v", elapsed)
 	}
-	maxDuration := stdoutDrainTimeout + time.Second
-	if elapsed >= maxDuration {
-		t.Fatalf("runCodexTask took %v, want < %v", elapsed, maxDuration)
+	if elapsed >= time.Second {
+		t.Fatalf("runCodexTaskWithContext took too long: %v", elapsed)
 	}
 
 	if fake.stdout == nil {
 		t.Fatalf("stdout reader not initialized")
 	}
 	if !fake.stdout.closed {
-		t.Fatalf("stdout reader still open; drainTimer should force close")
+		t.Fatalf("stdout reader still open after cancellation")
 	}
-	if reason := fake.stdout.Reason(); reason != stdoutCloseReasonDrain {
-		t.Fatalf("stdout close reason = %q, want %q", reason, stdoutCloseReasonDrain)
-	}
-
-	deadline := time.Now().Add(500 * time.Millisecond)
-	allowed := startG + 8
-	finalG := runtime.NumGoroutine()
-	for finalG > allowed && time.Now().Before(deadline) {
-		runtime.Gosched()
-		time.Sleep(10 * time.Millisecond)
-		runtime.GC()
-		finalG = runtime.NumGoroutine()
-	}
-	if finalG > allowed {
-		t.Fatalf("goroutines leaked: before=%d after=%d", startG, finalG)
+	if reason := fake.stdout.Reason(); reason != stdoutCloseReasonCtx {
+		t.Fatalf("stdout close reason = %q, want %q", reason, stdoutCloseReasonCtx)
 	}
 }
 
@@ -926,11 +833,11 @@ func TestRunCodexTask_ContextTimeout(t *testing.T) {
 
 	result := runCodexTaskWithContext(ctx, TaskSpec{Task: "ctx-timeout", WorkDir: defaultWorkdir}, nil, nil, false, false, 60)
 
-	if result.ExitCode != 124 {
-		t.Fatalf("exit code = %d, want 124 (%s)", result.ExitCode, result.Error)
+	if result.ExitCode != 130 {
+		t.Fatalf("exit code = %d, want 130 (%s)", result.ExitCode, result.Error)
 	}
-	if !strings.Contains(strings.ToLower(result.Error), "timeout") {
-		t.Fatalf("error %q does not mention timeout", result.Error)
+	if !strings.Contains(strings.ToLower(result.Error), "cancelled") {
+		t.Fatalf("error %q does not mention cancellation", result.Error)
 	}
 	if fake.process == nil {
 		t.Fatalf("fake process not initialized")
@@ -955,19 +862,14 @@ func TestRunCodexTask_ContextTimeout(t *testing.T) {
 	}
 }
 
-func TestRunCodexTask_ForcesStopAfterCompletion(t *testing.T) {
+func TestRunCodexTask_WaitsForNaturalExitAfterCompletion(t *testing.T) {
 	defer resetTestHooks()
-	_ = executor.SetForceKillDelay(0)
-
 	fake := newFakeCmd(fakeCmdConfig{
 		StdoutPlan: []fakeStdoutEvent{
 			{Data: `{"type":"item.completed","item":{"type":"agent_message","text":"done"}}` + "\n"},
 			{Data: `{"type":"thread.completed","thread_id":"tid"}` + "\n"},
 		},
-		KeepStdoutOpen:      true,
-		BlockWait:           true,
-		ReleaseWaitOnSignal: true,
-		ReleaseWaitOnKill:   true,
+		WaitDelay: 100 * time.Millisecond,
 	})
 
 	_ = executor.SetNewCommandRunner(func(ctx context.Context, name string, args ...string) executor.CommandRunner { return fake })
@@ -981,31 +883,28 @@ func TestRunCodexTask_ForcesStopAfterCompletion(t *testing.T) {
 	if result.ExitCode != 0 || result.Message != "done" {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	if duration > 2*time.Second {
+	if duration < 100*time.Millisecond {
+		t.Fatalf("runCodexTaskWithContext returned before process exit: %v", duration)
+	}
+	if duration > time.Second {
 		t.Fatalf("runCodexTaskWithContext took too long: %v", duration)
 	}
-	if runtime.GOOS == "windows" {
-		if fake.process.KillCount() == 0 {
-			t.Fatalf("expected Kill to be called, got 0")
-		}
-	} else if fake.process.SignalCount() == 0 {
-		t.Fatalf("expected SIGTERM to be sent, got %d", fake.process.SignalCount())
+	if fake.process.KillCount() != 0 {
+		t.Fatalf("expected no Kill calls, got %d", fake.process.KillCount())
+	}
+	if runtime.GOOS != "windows" && fake.process.SignalCount() != 0 {
+		t.Fatalf("expected no SIGTERM, got %d", fake.process.SignalCount())
 	}
 }
 
-func TestRunCodexTask_ForcesStopAfterTurnCompleted(t *testing.T) {
+func TestRunCodexTask_WaitsForNaturalExitAfterTurnCompleted(t *testing.T) {
 	defer resetTestHooks()
-	_ = executor.SetForceKillDelay(0)
-
 	fake := newFakeCmd(fakeCmdConfig{
 		StdoutPlan: []fakeStdoutEvent{
 			{Data: `{"type":"item.completed","item":{"type":"agent_message","text":"done"}}` + "\n"},
 			{Data: `{"type":"turn.completed"}` + "\n"},
 		},
-		KeepStdoutOpen:      true,
-		BlockWait:           true,
-		ReleaseWaitOnSignal: true,
-		ReleaseWaitOnKill:   true,
+		WaitDelay: 100 * time.Millisecond,
 	})
 
 	_ = executor.SetNewCommandRunner(func(ctx context.Context, name string, args ...string) executor.CommandRunner { return fake })
@@ -1019,32 +918,29 @@ func TestRunCodexTask_ForcesStopAfterTurnCompleted(t *testing.T) {
 	if result.ExitCode != 0 || result.Message != "done" {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	if duration > 2*time.Second {
+	if duration < 100*time.Millisecond {
+		t.Fatalf("runCodexTaskWithContext returned before process exit: %v", duration)
+	}
+	if duration > time.Second {
 		t.Fatalf("runCodexTaskWithContext took too long: %v", duration)
 	}
-	if runtime.GOOS == "windows" {
-		if fake.process.KillCount() == 0 {
-			t.Fatalf("expected Kill to be called, got 0")
-		}
-	} else if fake.process.SignalCount() == 0 {
-		t.Fatalf("expected SIGTERM to be sent, got %d", fake.process.SignalCount())
+	if fake.process.KillCount() != 0 {
+		t.Fatalf("expected no Kill calls, got %d", fake.process.KillCount())
+	}
+	if runtime.GOOS != "windows" && fake.process.SignalCount() != 0 {
+		t.Fatalf("expected no SIGTERM, got %d", fake.process.SignalCount())
 	}
 }
 
-func TestRunCodexTask_DoesNotTerminateBeforeThreadCompleted(t *testing.T) {
+func TestRunCodexTask_WaitsForFinalMessageBeforeNaturalExit(t *testing.T) {
 	defer resetTestHooks()
-	_ = executor.SetForceKillDelay(0)
-
 	fake := newFakeCmd(fakeCmdConfig{
 		StdoutPlan: []fakeStdoutEvent{
 			{Data: `{"type":"item.completed","item":{"type":"agent_message","text":"intermediate"}}` + "\n"},
 			{Delay: 1100 * time.Millisecond, Data: `{"type":"item.completed","item":{"type":"agent_message","text":"final"}}` + "\n"},
 			{Data: `{"type":"thread.completed","thread_id":"tid"}` + "\n"},
 		},
-		KeepStdoutOpen:      true,
-		BlockWait:           true,
-		ReleaseWaitOnSignal: true,
-		ReleaseWaitOnKill:   true,
+		WaitDelay: 1200 * time.Millisecond,
 	})
 
 	_ = executor.SetNewCommandRunner(func(ctx context.Context, name string, args ...string) executor.CommandRunner { return fake })
@@ -1058,15 +954,17 @@ func TestRunCodexTask_DoesNotTerminateBeforeThreadCompleted(t *testing.T) {
 	if result.ExitCode != 0 || result.Message != "final" {
 		t.Fatalf("unexpected result: %+v", result)
 	}
+	if duration < 1100*time.Millisecond {
+		t.Fatalf("runCodexTaskWithContext returned before final message: %v", duration)
+	}
 	if duration > 5*time.Second {
 		t.Fatalf("runCodexTaskWithContext took too long: %v", duration)
 	}
-	if runtime.GOOS == "windows" {
-		if fake.process.KillCount() == 0 {
-			t.Fatalf("expected Kill to be called, got 0")
-		}
-	} else if fake.process.SignalCount() == 0 {
-		t.Fatalf("expected SIGTERM to be sent, got %d", fake.process.SignalCount())
+	if fake.process.KillCount() != 0 {
+		t.Fatalf("expected no Kill calls, got %d", fake.process.KillCount())
+	}
+	if runtime.GOOS != "windows" && fake.process.SignalCount() != 0 {
+		t.Fatalf("expected no SIGTERM, got %d", fake.process.SignalCount())
 	}
 }
 
@@ -1844,8 +1742,10 @@ func TestClaudeModel_DefaultsFromSettings(t *testing.T) {
 			cmd := newFakeCmd(fakeCmdConfig{
 				PID: 123,
 				StdoutPlan: []fakeStdoutEvent{
-					{Data: "{\"type\":\"result\",\"session_id\":\"sid\",\"result\":\"ok\"}\n"},
+					{Data: "{\"type\":\"thread.started\",\"thread_id\":\"sid\"}\n"},
+					{Data: "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}\n"},
 				},
+				WaitDelay: 5 * time.Millisecond,
 			})
 			*fake = cmd
 			return cmd
@@ -2153,8 +2053,10 @@ func TestRunCodexTaskWithContext_CodexReasoningEffort(t *testing.T) {
 		return newFakeCmd(fakeCmdConfig{
 			PID: 123,
 			StdoutPlan: []fakeStdoutEvent{
-				{Data: "{\"type\":\"result\",\"session_id\":\"sid\",\"result\":\"ok\"}\n"},
+				{Data: "{\"type\":\"thread.started\",\"thread_id\":\"sid\"}\n"},
+				{Data: "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}\n"},
 			},
+			WaitDelay: 5 * time.Millisecond,
 		})
 	})
 	t.Cleanup(restore)
@@ -2425,31 +2327,32 @@ func TestBackendNamesAndCommands(t *testing.T) {
 	}
 }
 
-func TestRunResolveTimeout(t *testing.T) {
-	tests := []struct {
-		name   string
-		envVal string
-		want   int
-	}{
-		{"empty env", "", 7200},
-		{"milliseconds", "7200000", 7200},
-		{"seconds", "3600", 3600},
-		{"invalid", "invalid", 7200},
-		{"negative", "-100", 7200},
-		{"zero", "0", 7200},
-		{"small milliseconds", "5000", 5000},
-		{"boundary", "10000", 10000},
-		{"above boundary", "10001", 10},
+func TestRunSingleModeDoesNotPropagateCodexTimeout(t *testing.T) {
+	defer resetTestHooks()
+
+	t.Setenv("CODEX_TIMEOUT", "1")
+	cleanupLogsFn = func() (CleanupStats, error) { return CleanupStats{}, nil }
+	stdinReader = strings.NewReader("")
+	isTerminalFn = func() bool { return true }
+	oldArgs := os.Args
+	t.Cleanup(func() { os.Args = oldArgs })
+	os.Args = []string{"codeagent-wrapper", "task"}
+
+	buildCodexArgsFn = func(cfg *Config, targetArg string) []string {
+		return []string{targetArg}
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("CODEX_TIMEOUT", tt.envVal)
-			got := resolveTimeout()
-			if got != tt.want {
-				t.Errorf("resolveTimeout() with env=%q = %v, want %v", tt.envVal, got, tt.want)
-			}
-		})
+	var receivedTimeout int
+	runTaskFn = func(task TaskSpec, silent bool, timeout int) TaskResult {
+		receivedTimeout = timeout
+		return TaskResult{ExitCode: 0, Message: "ok"}
+	}
+
+	if code := run(); code != 0 {
+		t.Fatalf("run() = %d, want 0", code)
+	}
+	if receivedTimeout != noExecutionTimeout {
+		t.Fatalf("timeout = %d, want %d", receivedTimeout, noExecutionTimeout)
 	}
 }
 
@@ -2978,11 +2881,14 @@ func TestBackendPrintHelp(t *testing.T) {
 	}
 	output := buf.String()
 
-	expected := []string{"codeagent-wrapper", "Usage:", "resume", "CODEX_TIMEOUT", "Exit Codes:"}
+	expected := []string{"codeagent-wrapper", "Usage:", "resume", "CODEAGENT_MAX_PARALLEL_WORKERS", "Exit Codes:"}
 	for _, phrase := range expected {
 		if !strings.Contains(output, phrase) {
 			t.Errorf("printHelp() missing phrase %q", phrase)
 		}
+	}
+	if strings.Contains(output, "CODEX_TIMEOUT") {
+		t.Fatalf("printHelp() should not mention CODEX_TIMEOUT")
 	}
 }
 
@@ -3090,6 +2996,7 @@ func TestRunCodexTaskFn_UsesTaskBackend(t *testing.T) {
 			{Data: `{"type":"thread.started","thread_id":"backend-thread"}` + "\n"},
 			{Data: `{"type":"item.completed","item":{"type":"agent_message","text":"backend-msg"}}` + "\n"},
 		},
+		WaitDelay: 5 * time.Millisecond,
 	})
 
 	var seenName string
@@ -3303,13 +3210,26 @@ func TestRunCodexTask_StdoutPipeError(t *testing.T) {
 	}
 }
 
-func TestRunCodexTask_Timeout(t *testing.T) {
+func TestRunCodexTask_WithoutInternalTimeout(t *testing.T) {
 	defer resetTestHooks()
-	codexCommand = "sleep"
-	buildCodexArgsFn = func(cfg *Config, targetArg string) []string { return []string{"2"} }
+	codexCommand = "fake-cmd"
+	buildCodexArgsFn = func(cfg *Config, targetArg string) []string { return []string{targetArg} }
+	_ = executor.SetNewCommandRunner(func(ctx context.Context, name string, args ...string) executor.CommandRunner {
+		return newFakeCmd(fakeCmdConfig{
+			StdoutPlan: []fakeStdoutEvent{
+				{Data: "{\"type\":\"thread.started\",\"thread_id\":\"no-timeout\"}\n"},
+				{
+					Delay: 50 * time.Millisecond,
+					Data:  "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"done\"}}\n",
+				},
+			},
+			WaitDelay: 60 * time.Millisecond,
+		})
+	})
+
 	res := runCodexTask(TaskSpec{Task: "ignored"}, false, 1)
-	if res.ExitCode != 124 || !strings.Contains(res.Error, "timeout") {
-		t.Fatalf("expected timeout, got %+v", res)
+	if res.ExitCode != 0 || res.Message != "done" {
+		t.Fatalf("expected successful completion without wrapper timeout, got %+v", res)
 	}
 }
 
@@ -3366,6 +3286,7 @@ func TestRunSilentMode(t *testing.T) {
 	_ = executor.SetNewCommandRunner(func(ctx context.Context, name string, args ...string) executor.CommandRunner {
 		return newFakeCmd(fakeCmdConfig{
 			StdoutPlan: []fakeStdoutEvent{{Data: jsonOutput + "\n"}},
+			WaitDelay: 5 * time.Millisecond,
 		})
 	})
 
@@ -3861,6 +3782,72 @@ func TestRunSingleWithOutputFile(t *testing.T) {
 	}
 	if payload.Results[0].Message != "single-result" {
 		t.Fatalf("result message = %q, want %q", payload.Results[0].Message, "single-result")
+	}
+}
+
+func TestRunSingleMode_UsesSharedTaskLayerExecutor(t *testing.T) {
+	defer resetTestHooks()
+
+	setTempDirEnv(t, t.TempDir())
+	logger, err := NewLogger()
+	if err != nil {
+		t.Fatalf("NewLogger(): %v", err)
+	}
+	setLogger(logger)
+	t.Cleanup(func() { _ = closeLogger() })
+
+	stdinReader = strings.NewReader("")
+	isTerminalFn = func() bool { return true }
+	buildCodexArgsFn = func(cfg *Config, targetArg string) []string { return []string{targetArg} }
+
+	cfg := &Config{
+		Mode:    "new",
+		Task:    "task-body",
+		WorkDir: defaultWorkdir,
+		Backend: defaultBackendName,
+	}
+
+	var (
+		gotLayers     [][]TaskSpec
+		gotMaxWorkers int
+		gotTask       TaskSpec
+		gotTimeout    int
+	)
+	origExec := executeTaskLayersFn
+	executeTaskLayersFn = func(parentCtx context.Context, layers [][]TaskSpec, maxWorkers int, runTask taskRunner) []TaskResult {
+		gotLayers = layers
+		gotMaxWorkers = maxWorkers
+		res := runTask(layers[0][0], noExecutionTimeout)
+		return []TaskResult{res}
+	}
+	t.Cleanup(func() { executeTaskLayersFn = origExec })
+
+	origRunTask := runTaskFn
+	runTaskFn = func(task TaskSpec, silent bool, timeout int) TaskResult {
+		gotTask = task
+		gotTimeout = timeout
+		return TaskResult{TaskID: "single", ExitCode: 0, Message: "done"}
+	}
+	t.Cleanup(func() { runTaskFn = origRunTask })
+
+	if code := runSingleMode(cfg, "codeagent-wrapper"); code != 0 {
+		t.Fatalf("runSingleMode() = %d, want 0", code)
+	}
+
+	if len(gotLayers) != 1 || len(gotLayers[0]) != 1 {
+		t.Fatalf("layers = %#v, want one layer with one task", gotLayers)
+	}
+	if gotLayers[0][0].Task != "task-body" {
+		t.Fatalf("layer task = %q, want %q", gotLayers[0][0].Task, "task-body")
+	}
+	if gotMaxWorkers != 1 {
+		t.Fatalf("maxWorkers = %d, want 1", gotMaxWorkers)
+	}
+	if gotTask.Task != "task-body" {
+		t.Fatalf("runTask task = %q, want %q", gotTask.Task, "task-body")
+	}
+	if gotTimeout != noExecutionTimeout {
+		t.Fatalf("timeout = %d, want %d", gotTimeout, noExecutionTimeout)
 	}
 }
 
@@ -5222,13 +5209,13 @@ func TestResolveMaxParallelWorkers(t *testing.T) {
 		envValue string
 		want     int
 	}{
-		{"empty env returns unlimited", "", 0},
+		{"empty env returns default", "", config.DefaultMaxParallelWorkers},
 		{"valid value", "4", 4},
 		{"zero value", "0", 0},
 		{"at limit", "100", 100},
 		{"exceeds limit capped", "150", 100},
-		{"negative falls back to unlimited", "-1", 0},
-		{"invalid string falls back to unlimited", "abc", 0},
+		{"negative falls back to default", "-1", config.DefaultMaxParallelWorkers},
+		{"invalid string falls back to default", "abc", config.DefaultMaxParallelWorkers},
 	}
 
 	for _, tt := range tests {

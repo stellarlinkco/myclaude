@@ -3,9 +3,9 @@ package wrapper
 import (
 	"context"
 
-	backend "codeagent-wrapper/internal/backend"
 	config "codeagent-wrapper/internal/config"
 	executor "codeagent-wrapper/internal/executor"
+	backend "codeagent-wrapper/internal/infrastructure/backend"
 )
 
 // defaultRunCodexTaskFn is the default implementation of runCodexTaskFn (exposed for test reset).
@@ -25,7 +25,8 @@ func executeConcurrent(layers [][]TaskSpec, timeout int) []TaskResult {
 }
 
 func executeConcurrentWithContext(parentCtx context.Context, layers [][]TaskSpec, timeout int, maxWorkers int) []TaskResult {
-	return executor.ExecuteConcurrentWithContext(parentCtx, layers, timeout, maxWorkers, runCodexTaskFn)
+	_ = timeout
+	return executeTaskLayersFn(parentCtx, layers, maxWorkers, runCodexTaskFn)
 }
 
 func generateFinalOutput(results []TaskResult) string {

@@ -212,8 +212,6 @@ func (l *Logger) Error(msg string) { l.logWithLevel(zerolog.ErrorLevel, msg) }
 // Close signals the worker to flush and close the log file.
 // The log file is NOT removed, allowing inspection after program exit.
 // It is safe to call multiple times.
-// Waits up to CODEAGENT_LOGGER_CLOSE_TIMEOUT_MS (default: 5000) for shutdown; set to 0 to wait indefinitely.
-// Returns an error if shutdown doesn't complete within the timeout.
 func (l *Logger) Close() error {
 	if l == nil {
 		return nil
@@ -224,25 +222,7 @@ func (l *Logger) Close() error {
 	l.closeOnce.Do(func() {
 		l.closed.Store(true)
 		close(l.done)
-
-		timeout := loggerCloseTimeout()
-		workerDone := make(chan struct{})
-		go func() {
-			l.workerWG.Wait()
-			close(workerDone)
-		}()
-
-		if timeout > 0 {
-			select {
-			case <-workerDone:
-				// Worker stopped gracefully
-			case <-time.After(timeout):
-				closeErr = fmt.Errorf("logger worker timeout during close")
-				return
-			}
-		} else {
-			<-workerDone
-		}
+		l.workerWG.Wait()
 
 		if l.workerErr != nil && closeErr == nil {
 			closeErr = l.workerErr
@@ -250,23 +230,6 @@ func (l *Logger) Close() error {
 	})
 
 	return closeErr
-}
-
-func loggerCloseTimeout() time.Duration {
-	const defaultTimeout = 5 * time.Second
-
-	raw := strings.TrimSpace(os.Getenv("CODEAGENT_LOGGER_CLOSE_TIMEOUT_MS"))
-	if raw == "" {
-		return defaultTimeout
-	}
-	ms, err := strconv.Atoi(raw)
-	if err != nil {
-		return defaultTimeout
-	}
-	if ms <= 0 {
-		return 0
-	}
-	return time.Duration(ms) * time.Millisecond
 }
 
 // RemoveLogFile removes the log file. Should only be called after Close().
