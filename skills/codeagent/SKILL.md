@@ -7,7 +7,7 @@ description: Execute codeagent-wrapper for multi-backend AI code tasks. Supports
 
 ## Overview
 
-Execute `codeagent-wrapper` commands with pluggable AI backends (Codex, Claude, Gemini, OpenCode), agent presets, auto-detected skill injection, and parallel task orchestration. Supports session resume, git worktree isolation, and structured JSON output.
+Execute `codeagent-wrapper` commands with pluggable AI backends (Codex, Claude, Gemini, OpenCode), agent presets, auto-detected skill injection, and parallel task orchestration. Default to background execution, and prefer `--parallel` whenever work can be split into independent tasks.
 
 ## When to Use
 
@@ -121,6 +121,19 @@ codeagent-wrapper --backend codex - [workdir] <<'EOF'
 EOF
 ```
 
+Default execution mode is background. Run in foreground only when the next step requires the full response immediately.
+
+When running in foreground, `codeagent-wrapper` emits liveness frames on stdout before the final answer:
+
+```text
+[codeagent-progress] status=started ...
+[codeagent-progress] status=streaming ...
+[codeagent-progress] status=running ...
+[codeagent-progress] status=completed ...
+```
+
+Treat these lines as progress only. Do not conclude "no data returned" and do not start doing the task yourself while progress frames are still arriving.
+
 ### With Agent Preset
 
 ```bash
@@ -155,23 +168,18 @@ EOF
 Execute in an isolated git worktree to keep changes separate from the main branch:
 
 ```bash
-# Create new worktree automatically (branch: do/{task_id})
 codeagent-wrapper --agent develop --worktree - . <<'EOF'
 Implement feature in isolation...
-EOF
-
-# Reuse existing worktree (set by /do workflow)
-DO_WORKTREE_DIR=/path/to/worktree codeagent-wrapper --agent develop - . <<'EOF'
-Continue work in existing worktree...
 EOF
 ```
 
 **Rules:**
-- `DO_WORKTREE_DIR` env var takes precedence over `--worktree`
 - Read-only agents (code-explorer, code-architect, code-reviewer) do NOT need worktree
 - Only `develop` agent needs worktree when making changes
 
 ## Parallel Execution
+
+Use `--parallel` by default for multi-step or multi-agent work. Fall back to single-task mode only when the work is truly linear or the next step depends on the full output of the current task.
 
 ### Task Config Format
 
@@ -335,14 +343,11 @@ SESSION_ID: 019a7247-ac9d-71f3-89e2-a823dbd8fd14
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CODEX_TIMEOUT` | Timeout in milliseconds | 7200000 (2 hours) |
 | `CODEAGENT_SKIP_PERMISSIONS` | Skip Claude backend permission prompts (`true`/`false`) | true |
 | `CODEX_BYPASS_SANDBOX` | Control Codex sandbox bypass (`true`/`false`) | true |
 | `CODEAGENT_MAX_PARALLEL_WORKERS` | Max concurrent parallel workers (0=unlimited, max 100) | 0 |
-| `DO_WORKTREE_DIR` | Reuse existing worktree path (set by /do workflow) | none |
 | `CODEAGENT_TMPDIR` | Custom temp directory for executable scripts | system temp |
 | `CODEAGENT_ASCII_MODE` | Use ASCII symbols (PASS/WARN/FAIL) instead of Unicode | false |
-| `CODEAGENT_LOGGER_CLOSE_TIMEOUT_MS` | Logger shutdown timeout in ms | 5000 |
 
 **Config file**: Supports `~/.codeagent/config.(yaml|yml|json|toml)` with the same keys as CLI flags (kebab-case). Env vars use `CODEAGENT_` prefix with underscores.
 
@@ -352,7 +357,6 @@ SESSION_ID: 019a7247-ac9d-71f3-89e2-a823dbd8fd14
 |------|---------|
 | `0` | Success |
 | `1` | General error (missing args, failed task) |
-| `124` | Timeout |
 | `127` | Backend command not found |
 | `130` | Interrupted (Ctrl+C) |
 
@@ -364,7 +368,7 @@ Bash tool parameters:
 - command: codeagent-wrapper --agent <agent> --skills <skills> - [workdir] <<'EOF'
   <task content>
   EOF
-- timeout: 7200000
+- background: true
 - description: <brief description>
 ```
 
@@ -381,33 +385,21 @@ Bash tool parameters:
   ---CONTENT---
   task content
   EOF
-- timeout: 7200000
-- description: <brief description>
-```
-
-**With Worktree**:
-```
-Bash tool parameters:
-- command: DO_WORKTREE_DIR=<path> codeagent-wrapper --agent develop --skills <skills> - . <<'EOF'
-  <task content>
-  EOF
-- timeout: 7200000
+- background: true
 - description: <brief description>
 ```
 
 ## Critical Rules
 
-**NEVER kill codeagent processes.** Long-running tasks (2-10 minutes) are normal. Instead:
+**NEVER kill codeagent processes.** Long-running tasks are normal. Default to background execution and inspect progress instead of blocking on the command.
 
 1. **Check task status via log file**:
    ```bash
    tail -f /tmp/claude/<workdir>/tasks/<task_id>.output
    ```
 
-2. **Wait with timeout**:
-   ```bash
-   TaskOutput(task_id="<id>", block=true, timeout=300000)
-   ```
+2. **Prefer wrapper progress frames over ad-hoc log scraping**:
+   If stdout is still emitting `[codeagent-progress] ...`, the task is alive and has not stalled.
 
 3. **Check process without killing**:
    ```bash

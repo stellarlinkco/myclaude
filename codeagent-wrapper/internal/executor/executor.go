@@ -25,6 +25,7 @@ import (
 )
 
 const forceKillWaitTimeout = 5 * time.Second
+const defaultProgressHeartbeatInterval = 15 * time.Second
 
 // Defaults duplicated from wrapper for module decoupling.
 const (
@@ -51,9 +52,13 @@ var (
 )
 
 var forceKillDelay atomic.Int32
+var progressHeartbeatInterval atomic.Int64
+var progressOutput = func() io.Writer { return os.Stdout }
+var progressOutputMu sync.Mutex
 
 func init() {
 	forceKillDelay.Store(5) // seconds - default value
+	progressHeartbeatInterval.Store(int64(defaultProgressHeartbeatInterval))
 }
 
 type (
@@ -83,6 +88,38 @@ func logInfo(msg string) { ilogger.LogInfo(msg) }
 func logWarn(msg string) { ilogger.LogWarn(msg) }
 
 func logError(msg string) { ilogger.LogError(msg) }
+
+func progressInterval() time.Duration {
+	return time.Duration(progressHeartbeatInterval.Load())
+}
+
+func emitProgress(silent bool, status string, taskSpec TaskSpec, commandName, logPath string, elapsed time.Duration) {
+	if silent || progressOutput == nil || strings.TrimSpace(status) == "" {
+		return
+	}
+	w := progressOutput()
+	if w == nil {
+		return
+	}
+
+	fields := []string{"[codeagent-progress]", "status=" + status}
+	if taskID := strings.TrimSpace(taskSpec.ID); taskID != "" {
+		fields = append(fields, "task_id="+sanitizeOutput(taskID))
+	}
+	if backend := strings.TrimSpace(commandName); backend != "" {
+		fields = append(fields, "backend="+sanitizeOutput(backend))
+	}
+	if logPath = strings.TrimSpace(logPath); logPath != "" {
+		fields = append(fields, "log="+logPath)
+	}
+	if elapsed > 0 {
+		fields = append(fields, "elapsed="+elapsed.Round(time.Second).String())
+	}
+
+	progressOutputMu.Lock()
+	defer progressOutputMu.Unlock()
+	fmt.Fprintln(w, strings.Join(fields, " "))
+}
 
 func logConcurrencyPlanning(limit, total int) { ilogger.LogConcurrencyPlanning(limit, total) }
 
@@ -1162,14 +1199,6 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 		stdoutReader = io.TeeReader(stdout, stdoutLogger)
 	}
 
-	// Start parse goroutine BEFORE starting the command to avoid race condition
-	// where fast-completing commands close stdout before parser starts reading
-	parseCh := make(chan parseResult, 1)
-	go func() {
-		msg, tid := parseJSONStreamInternal(stdoutReader, logWarnFn, logInfoFn, nil, nil)
-		parseCh <- parseResult{message: msg, threadID: tid}
-	}()
-
 	logInfoFn(fmt.Sprintf("Starting %s with args: %s %s...", commandName, commandName, strings.Join(codexArgs[:min(5, len(codexArgs))], " ")))
 
 	if err := cmd.Start(); err != nil {
@@ -1217,6 +1246,36 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- cmd.Wait() }()
 
+	emitProgress(silent, "started", taskSpec, commandName, result.LogPath, 0)
+
+	var (
+		firstMessageSeen atomic.Bool
+		completeSeen     atomic.Bool
+	)
+	// Start parse goroutine BEFORE entering the wait loop so progress callbacks
+	// can surface backend activity while the process is still running.
+	parseCh := make(chan parseResult, 1)
+	go func() {
+		msg, tid := parseJSONStreamInternal(stdoutReader, logWarnFn, logInfoFn, func() {
+			if firstMessageSeen.CompareAndSwap(false, true) {
+				emitProgress(silent, "streaming", taskSpec, commandName, result.LogPath, 0)
+			}
+		}, func() {
+			if completeSeen.CompareAndSwap(false, true) {
+				emitProgress(silent, "backend-complete", taskSpec, commandName, result.LogPath, 0)
+			}
+		})
+		parseCh <- parseResult{message: msg, threadID: tid}
+	}()
+
+	var heartbeat <-chan time.Time
+	startedAt := time.Now()
+	if interval := progressInterval(); interval > 0 {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		heartbeat = ticker.C
+	}
+
 	var (
 		waitErr        error
 		forceKillTimer *forceKillTimer
@@ -1230,6 +1289,8 @@ waitLoop:
 		case err := <-waitCh:
 			waitErr = err
 			break waitLoop
+		case <-heartbeat:
+			emitProgress(silent, "running", taskSpec, commandName, result.LogPath, time.Since(startedAt))
 		case <-ctx.Done():
 			ctxCancelled = true
 			logErrorFn(cancelReason(commandName, ctx))
@@ -1273,6 +1334,7 @@ waitLoop:
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		result.ExitCode = 130
 		result.Error = attachStderr("execution cancelled")
+		emitProgress(silent, "cancelled", taskSpec, commandName, result.LogPath, time.Since(startedAt))
 		return result
 	}
 
@@ -1291,11 +1353,13 @@ waitLoop:
 			if stderrLogger != nil {
 				stderrLogger.Flush()
 			}
+			emitProgress(silent, "failed", taskSpec, commandName, result.LogPath, time.Since(startedAt))
 			return result
 		}
 		logErrorFn(commandName + " error: " + waitErr.Error())
 		result.ExitCode = 1
 		result.Error = attachStderr(commandName + " error: " + waitErr.Error())
+		emitProgress(silent, "failed", taskSpec, commandName, result.LogPath, time.Since(startedAt))
 		return result
 	}
 
@@ -1305,6 +1369,7 @@ waitLoop:
 		logErrorFn(fmt.Sprintf("%s completed without agent_message output", commandName))
 		result.ExitCode = 1
 		result.Error = attachStderr(fmt.Sprintf("%s completed without agent_message output", commandName))
+		emitProgress(silent, "failed", taskSpec, commandName, result.LogPath, time.Since(startedAt))
 		return result
 	}
 
@@ -1321,6 +1386,7 @@ waitLoop:
 	if result.LogPath == "" && injectedLogger != nil {
 		result.LogPath = injectedLogger.Path()
 	}
+	emitProgress(silent, "completed", taskSpec, commandName, result.LogPath, time.Since(startedAt))
 
 	return result
 }

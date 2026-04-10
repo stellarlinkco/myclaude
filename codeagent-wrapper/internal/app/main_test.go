@@ -4718,6 +4718,37 @@ func TestRun_SuccessfulExecution(t *testing.T) {
 	}
 }
 
+func TestRun_SuccessfulExecutionEmitsProgressFrames(t *testing.T) {
+	defer resetTestHooks()
+	stdout := captureStdoutPipe()
+
+	restore := withBackend(createFakeCodexScript(t, "tid-progress", "ok"), buildCodexArgs)
+	defer restore()
+	stdinReader = strings.NewReader("")
+	isTerminalFn = func() bool { return true }
+	os.Args = []string{"codeagent-wrapper", "task"}
+
+	exitCode := run()
+	if exitCode != 0 {
+		t.Fatalf("exit=%d, want 0", exitCode)
+	}
+
+	restoreStdoutPipe(stdout)
+	output := stdout.String()
+	if !strings.Contains(output, "[codeagent-progress] status=started") {
+		t.Fatalf("stdout missing start progress frame: %q", output)
+	}
+	if !strings.Contains(output, "[codeagent-progress] status=streaming") {
+		t.Fatalf("stdout missing streaming progress frame: %q", output)
+	}
+	if !strings.Contains(output, "[codeagent-progress] status=completed") {
+		t.Fatalf("stdout missing completed progress frame: %q", output)
+	}
+	if !strings.Contains(output, "SESSION_ID: tid-progress") {
+		t.Fatalf("stdout missing final session id: %q", output)
+	}
+}
+
 func TestRun_ExplicitStdinSuccess(t *testing.T) {
 	defer resetTestHooks()
 	stdout := captureStdoutPipe()

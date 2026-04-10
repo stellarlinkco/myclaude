@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -136,6 +137,12 @@ func (c *runtimeTestCmd) finish(err error) {
 }
 
 func TestRunCodexTaskWithContext_IgnoresWrapperTimeoutAndWaitsForExit(t *testing.T) {
+	var progress bytes.Buffer
+	restoreProgress := SetProgressOutput(&progress)
+	defer restoreProgress()
+	restoreHeartbeat := SetProgressHeartbeatInterval(200 * time.Millisecond)
+	defer restoreHeartbeat()
+
 	restoreRunner := SetNewCommandRunner(func(ctx context.Context, name string, args ...string) CommandRunner {
 		return newRuntimeTestCmd(func(cmd *runtimeTestCmd) {
 			go func() {
@@ -164,7 +171,7 @@ func TestRunCodexTaskWithContext_IgnoresWrapperTimeoutAndWaitsForExit(t *testing
 		func(*Config, string) []string { return []string{"--json", "hi"} },
 		nil,
 		false,
-		true,
+		false,
 		1,
 	)
 	elapsed := time.Since(start)
@@ -180,6 +187,12 @@ func TestRunCodexTaskWithContext_IgnoresWrapperTimeoutAndWaitsForExit(t *testing
 	}
 	if elapsed < 1400*time.Millisecond {
 		t.Fatalf("elapsed=%v, want >= 1.4s to prove wrapper timeout is ignored", elapsed)
+	}
+	got := progress.String()
+	for _, want := range []string{"status=started", "status=streaming", "status=backend-complete", "status=running", "status=completed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("progress=%q, want %q", got, want)
+		}
 	}
 }
 

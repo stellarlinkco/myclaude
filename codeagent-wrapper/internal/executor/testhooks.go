@@ -2,7 +2,9 @@ package executor
 
 import (
 	"context"
+	"io"
 	"os/exec"
+	"time"
 
 	backend "codeagent-wrapper/internal/backend"
 )
@@ -46,6 +48,18 @@ func SetNewCommandRunner(fn func(context.Context, string, ...string) CommandRunn
 		}
 	}
 	return func() { newCommandRunner = prev }
+}
+
+func SetProgressOutput(w io.Writer) (restore func()) {
+	prev := progressOutput
+	progressOutput = func() io.Writer { return w }
+	return func() { progressOutput = prev }
+}
+
+func SetProgressHeartbeatInterval(d time.Duration) (restore func()) {
+	prev := progressHeartbeatInterval.Load()
+	progressHeartbeatInterval.Store(int64(d))
+	return func() { progressHeartbeatInterval.Store(prev) }
 }
 
 func WithTaskLogger(ctx context.Context, logger *Logger) context.Context {
