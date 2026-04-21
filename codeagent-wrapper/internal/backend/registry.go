@@ -10,6 +10,7 @@ var registry = map[string]Backend{
 	"claude":   ClaudeBackend{},
 	"gemini":   GeminiBackend{},
 	"opencode": OpencodeBackend{},
+	"kimi":     KimiBackend{},
 }
 
 // Registry exposes the available backends. Intended for internal inspection/tests.

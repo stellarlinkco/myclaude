@@ -71,6 +71,8 @@ func loadMinimalClaudeSettings() minimalClaudeSettings { return backend.LoadMini
 
 func loadGeminiEnv() map[string]string { return backend.LoadGeminiEnv() }
 
+func loadKimiEnv() map[string]string { return backend.LoadKimiEnv() }
+
 func NewLogger() (*Logger, error) { return ilogger.NewLogger() }
 
 func NewLoggerWithSuffix(suffix string) (*Logger, error) { return ilogger.NewLoggerWithSuffix(suffix) }
@@ -1021,6 +1023,16 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 		}
 	}
 
+	// Load kimi env from ~/.kimi/.env if exists
+	if cfg.Backend == "kimi" {
+		fileEnv = loadKimiEnv()
+		if cfg.Mode != "resume" && strings.TrimSpace(cfg.Model) == "" {
+			if model := fileEnv["KIMI_MODEL_NAME"]; model != "" {
+				cfg.Model = model
+			}
+		}
+	}
+
 	useStdin := taskSpec.UseStdin
 	targetArg := taskSpec.Task
 	if useStdin {
@@ -1194,6 +1206,9 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 			stderrOut = stderrFilter
 		} else if cfg.Backend == "codex" {
 			stderrFilter = newFilteringWriter(os.Stderr, codexNoisePatterns)
+			stderrOut = stderrFilter
+		} else if cfg.Backend == "kimi" {
+			stderrFilter = newFilteringWriter(os.Stderr, kimiNoisePatterns)
 			stderrOut = stderrFilter
 		}
 		stderrWriters = append([]io.Writer{stderrOut}, stderrWriters...)
