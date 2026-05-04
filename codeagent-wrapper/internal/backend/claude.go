@@ -121,7 +121,7 @@ func buildClaudeArgs(cfg *config.Config, targetArg string) []string {
 
 	// Prevent infinite recursion: disable all setting sources (user, project, local)
 	// This ensures a clean execution environment without CLAUDE.md or skills that would trigger codeagent
-	args = append(args, "--setting-sources", "")
+	// args = append(args, "--setting-sources", "")
 
 	if model := strings.TrimSpace(cfg.Model); model != "" {
 		args = append(args, "--model", model)
