@@ -29,7 +29,7 @@ codeagent-wrapper --parallel [flags] < tasks_config
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--backend <name>` | Backend: codex, claude, gemini, opencode | codex |
+| `--backend <name>` | Backend: codex, claude, gemini, opencode, kimi | codex |
 | `--agent <name>` | Agent preset (from models.json or agents/ dir) | none |
 | `--model <name>` | Model override for any backend | backend default |
 | `--skills <names>` | Comma-separated skill names to inject | auto-detected |
@@ -52,6 +52,7 @@ codeagent-wrapper --parallel [flags] < tasks_config
 | **Claude** | `--backend claude` | Documentation, prompt engineering, clear-requirement features |
 | **Gemini** | `--backend gemini` | UI/UX prototyping, design system implementation |
 | **OpenCode** | `--backend opencode` | Lightweight tasks, minimal feature set |
+| **Kimi** | `--backend kimi` | Long-context tasks, large codebase ingestion, multi-file analysis |
 
 ## Agent Presets
 

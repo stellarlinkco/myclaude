@@ -23,6 +23,14 @@ var codexNoisePatterns = []string{
 	"ERROR codex_core::",
 }
 
+// kimiNoisePatterns contains stderr patterns to filter for kimi backend
+var kimiNoisePatterns = []string{
+	"[INFO]",
+	"[DEBUG]",
+	"Loaded cached",
+	"Loading extension:",
+}
+
 // filteringWriter wraps an io.Writer and filters out lines matching patterns
 type filteringWriter struct {
 	w        io.Writer
