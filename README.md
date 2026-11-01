@@ -37,6 +37,7 @@ Individual skills can be installed separately via `npx github:stellarlinkco/mycl
 | browser | Browser automation for web testing and data extraction |
 | codeagent | codeagent-wrapper invocation for multi-backend AI code tasks |
 | codex | Direct Codex backend execution |
+| deja-session-memory | Cross-agent local session memory across Claude Code, Codex, Gemini CLI, OpenCode, and Cursor |
 | dev | Lightweight end-to-end development workflow |
 | gemini | Direct Gemini backend execution |
 | product-requirements | Interactive PRD generation with quality scoring |
