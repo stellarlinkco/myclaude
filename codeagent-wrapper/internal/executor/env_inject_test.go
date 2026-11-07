@@ -91,7 +91,7 @@ func TestEnvInjectionLogic(t *testing.T) {
 		"agents": {
 			"explore": {
 				"backend": "claude",
-				"model": "MiniMax-M3",
+				"model": "MiniMax-M3.1-Flash",
 				"base_url": "https://api.minimax.io/anthropic",
 				"api_key": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test"
 			}

@@ -34,7 +34,7 @@ MiniMax 提供 Anthropic 兼容和 OpenAI 兼容两种后端，并支持全球�
 | `minimax-openai-global` | `codex` | OpenAI | global_en | `https://api.minimax.io/v1` |
 | `minimax-openai-cn` | `codex` | OpenAI | cn_zh | `https://api.minimaxi.com/v1` |
 
-`MiniMax-M3` has a 1,000,000-token context window, accepts text, image, and video input, supports adaptive or disabled thinking, and costs $0.60 input / $2.40 output / $0.12 cache read per million tokens. `MiniMax-M2.7` has a 204,800-token context window, accepts text input, always uses thinking, and costs $0.30 input / $1.20 output / $0.06 cache read / $0.375 cache write per million tokens. See the official [global documentation](https://platform.minimax.io/docs) and [China documentation](https://platform.minimaxi.com/docs).
+`MiniMax-M3.1-Flash` has a 1,000,000-token context window, accepts text, image, and video input, always uses adaptive thinking, and costs $0.15 input / $0.60 output / $0.015 cache read per million tokens. `MiniMax-M3` has the same context window and input modalities, supports adaptive or disabled thinking, and costs $0.30 input / $1.20 output / $0.06 cache read per million tokens for standard requests up to 512k input tokens; standard requests above 512k cost $0.60 input / $2.40 output / $0.12 cache read, and the priority service tier applies a 1.5x multiplier. See the official [global documentation](https://platform.minimax.io/docs) and [China documentation](https://platform.minimaxi.com/docs).
 
 ## 安装
 

@@ -60,7 +60,7 @@ func TestEnvInjection_LogsToStderrAndMasksKey(t *testing.T) {
   "agents": {
     "explore": {
       "backend": "claude",
-      "model": "MiniMax-M2.7",
+      "model": "MiniMax-M3",
       "base_url": "` + baseURL + `",
       "api_key": "` + apiKey + `"
     }
